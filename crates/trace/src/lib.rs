@@ -50,6 +50,7 @@ mod fit;
 mod gradient;
 mod group;
 mod logo;
+mod merge;
 mod mosaic;
 mod quantize;
 mod shapes;

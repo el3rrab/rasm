@@ -315,12 +315,13 @@ fn traced_shape(shape: tr::TracedShape, xf: vectorcraft_geom::Affine) -> LiveSha
     live
 }
 
-/// The gradient fill for a linear gradient the tracer found (in the image's pixels), placed in the
-/// document by `xf`.
+/// The gradient fill for a linear or radial gradient the tracer found (in the image's pixels),
+/// placed in the document by `xf`.
 fn traced_gradient(g: &tr::TracedGradient, xf: vectorcraft_geom::Affine) -> Paint {
     use vectorcraft_color::{Gradient, GradientGeom, GradientKind, GradientPaint, GradientStop};
     let stops = g.stops.iter().map(|&(at, c)| GradientStop::new(at as f32, Color::rgb8(c[0], c[1], c[2]))).collect();
-    let mut paint = GradientPaint::new(Gradient::new(GradientKind::Linear, stops));
+    let kind = if g.radial { GradientKind::Radial } else { GradientKind::Linear };
+    let mut paint = GradientPaint::new(Gradient::new(kind, stops));
     paint.geom = Some(GradientGeom { start: xf * g.start, end: xf * g.end, aspect: 1.0, focal: None });
     Paint::Gradient(Box::new(paint))
 }

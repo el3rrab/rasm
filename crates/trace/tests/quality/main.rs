@@ -22,6 +22,7 @@ mod centre_scenes;
 mod inputs;
 mod measure;
 mod raster;
+mod samples;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::fmt::Write as _;
@@ -402,4 +403,14 @@ fn harness_measures_a_disc() {
     assert_eq!(m.paths, 1.0);
     assert!(m.geo_mean < 0.06 && m.geo_max < 0.3 && m.miss_max < 0.3, "{m:?}");
     assert!(m.delta < 0.2 && m.kinks == 0.0 && m.gap.is_nan(), "{m:?}");
+}
+
+#[test]
+#[ignore = "needs TRACE_SAMPLES=dir of real images (kept out of the repository); run with --release"]
+fn samples_report() {
+    let Some(dir) = std::env::var_os("TRACE_SAMPLES") else { return };
+    let out = std::env::var_os("TRACE_SAMPLES_OUT").map(std::path::PathBuf::from);
+    let rows: Vec<samples::Row> =
+        samples::images(std::path::Path::new(&dir)).iter().flat_map(|p| samples::measure_image(p, out.as_deref())).collect();
+    println!("{}", samples::report(&rows));
 }

@@ -28,22 +28,31 @@ const STOP_TOLERANCE: f64 = 2.0;
 /// How far (levels) a pixel beside a gradient may be from the gradient's colour there and join it.
 const GROW: f64 = 10.0;
 
-/// A linear gradient a traced path is filled with.
+/// A linear or radial gradient a traced path is filled with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TracedGradient {
-    /// The gradient's line, in pixel coordinates: the first stop's colour is at `start` and before
-    /// it, the last one's at `end` and beyond.
+    /// Linear: the gradient's line, in pixel coordinates: the first stop's colour is at `start`
+    /// and before it, the last one's at `end` and beyond. Radial: `start` is the centre and `end`
+    /// a point on the circle where the stops reach 1.
     pub start: Point,
     pub end: Point,
-    /// The stops: how far along the line (0 to 1, ascending, the first 0 and the last 1) and the colour.
+    /// The stops: how far along the line, or out from the centre (0 to 1, ascending; a linear
+    /// gradient's first 0 and last 1), and the colour. Before the first stop and after the last
+    /// one, their colours.
     pub stops: Vec<(f64, [u8; 3])>,
+    /// A radial gradient (rings about `start`), not a linear one.
+    pub radial: bool,
 }
 
 impl TracedGradient {
     /// The gradient's colour at `p`.
     pub fn color_at(&self, p: Point) -> [f64; 3] {
         let d = self.end - self.start;
-        let t = if d.hypot2() > 0.0 { ((p - self.start).dot(d) / d.hypot2()).clamp(0.0, 1.0) } else { 0.0 };
+        let t = match (self.radial, d.hypot2() > 0.0) {
+            (_, false) => 0.0,
+            (false, true) => ((p - self.start).dot(d) / d.hypot2()).clamp(0.0, 1.0),
+            (true, true) => ((p - self.start).hypot() / d.hypot()).clamp(0.0, 1.0),
+        };
         let color = |i: usize| self.stops.get(i).map_or([0.0; 3], |s| s.1.map(f64::from));
         let after = self.stops.iter().position(|s| s.0 >= t).unwrap_or(self.stops.len().saturating_sub(1));
         let Some(before) = after.checked_sub(1) else { return color(after) };
@@ -319,6 +328,7 @@ fn fit(img: &Raster, w: usize, members: &[usize], all: &[usize], rim: usize) -> 
         start: middle + dir * (t0 + first * length),
         end: middle + dir * (t0 + last * length),
         stops: stops.iter().map(|&(t, c)| ((t - first) / (last - first), c.map(|v| v.round().clamp(0.0, 255.0) as u8))).collect(),
+        radial: false,
     };
     // Carried on to the ends of the whole area, each end ramp going on as it goes.
     let d = gradient.end - gradient.start;
@@ -342,6 +352,7 @@ fn fit(img: &Raster, w: usize, members: &[usize], all: &[usize], rim: usize) -> 
         start: gradient.start + d * u0,
         end: gradient.start + d * u1,
         stops: stops.into_iter().map(|(u, c)| ((u - u0) / (u1 - u0), c)).collect(),
+        radial: false,
     };
     // Painted back, it is the area: most pixels of its inside within a few levels, and all that
     // are (the rest: noise, a soft rim, the flat colour just beyond it) on average nearer still.
