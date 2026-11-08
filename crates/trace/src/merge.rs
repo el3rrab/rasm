@@ -72,7 +72,7 @@ fn mul1(p: &Poly, q: &Poly) -> Poly {
 
 /// A colour model: its basis functions of the position.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Model {
+pub(crate) enum Model {
     /// Along direction `u`.
     Linear { u: Vec2 },
     /// About `centre`.
@@ -83,15 +83,15 @@ enum Model {
 /// position up to degree 4, and per channel the colour times every monomial up to degree 2 and
 /// the colour squared.
 #[derive(Clone, Copy, Debug)]
-struct Moments {
+pub(crate) struct Moments {
     m: [f64; 15],
     c: [[f64; 7]; 3],
 }
 
 impl Moments {
-    const ZERO: Moments = Moments { m: [0.0; 15], c: [[0.0; 7]; 3] };
+    pub(crate) const ZERO: Moments = Moments { m: [0.0; 15], c: [[0.0; 7]; 3] };
 
-    fn add(&mut self, x: f64, y: f64, rgb: [f64; 3]) {
+    pub(crate) fn add(&mut self, x: f64, y: f64, rgb: [f64; 3]) {
         let xp = [1.0, x, x * x, x * x * x, x * x * x * x];
         let yp = [1.0, y, y * y, y * y * y, y * y * y * y];
         for d in 0..=4 {
@@ -111,7 +111,7 @@ impl Moments {
         }
     }
 
-    fn merged(&self, o: &Moments) -> Moments {
+    pub(crate) fn merged(&self, o: &Moments) -> Moments {
         let mut out = *self;
         out.m.iter_mut().zip(o.m).for_each(|(a, b)| *a += b);
         for (a, b) in out.c.iter_mut().zip(o.c) {
@@ -120,7 +120,7 @@ impl Moments {
         out
     }
 
-    fn n(&self) -> f64 {
+    pub(crate) fn n(&self) -> f64 {
         self.m[0]
     }
 
@@ -234,7 +234,7 @@ impl Moments {
     }
 
     /// The best model's sum of squared differences, and the model.
-    fn best(&self) -> (f64, Option<Model>) {
+    pub(crate) fn best(&self) -> (f64, Option<Model>) {
         let flat = self.flat_sse();
         if self.n() < 8.0 {
             return (flat, None);
