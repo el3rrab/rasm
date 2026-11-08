@@ -1,0 +1,91 @@
+# Rasm: pull each new VectorCraft release from storytold/vectorcraft into our main.
+#
+# Runs every 6 hours (and on demand). When upstream has a release tag that our main does not
+# contain yet, it merges that tag into main and pushes. If the merge conflicts with our own
+# changes, nothing is pushed: an issue is opened so the conflict can be resolved by hand.
+#
+# Secret SYNC_TOKEN: a fine-grained token for el3rrab/rasm with Contents, Workflows and Issues
+# set to read and write. It is needed because upstream releases often change files under
+# .github/workflows, which the default GITHUB_TOKEN is not allowed to push.
+name: Rasm upstream sync
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: rasm-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'el3rrab/rasm'
+    runs-on: ubuntu-latest
+    env:
+      UPSTREAM: storytold/vectorcraft
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Find the latest upstream release
+        id: latest
+        run: |
+          tag=$(gh release view --repo "$UPSTREAM" --json tagName --jq .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          git remote add upstream "https://github.com/$UPSTREAM.git"
+          git fetch --tags --force upstream
+          if git merge-base --is-ancestor "refs/tags/$tag" HEAD; then
+            echo "Already on $tag."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New upstream release: $tag"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge the release into main
+        id: merge
+        if: steps.latest.outputs.needed == 'true'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          git config user.name "rasm-sync[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git merge --no-edit -m "Sync upstream VectorCraft $TAG" "refs/tags/$TAG"; then
+            git push origin main
+            git push origin "refs/tags/$TAG"
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > conflicts.txt
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Report a conflict
+        if: steps.merge.outputs.result == 'conflict'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+        run: |
+          title="Upstream sync: $TAG conflicts with our changes"
+          if gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number' | grep -q .; then
+            echo "Issue already open."
+            exit 0
+          fi
+          {
+            echo "The automatic sync could not merge VectorCraft \`$TAG\` into \`main\`. Nothing was pushed."
+            echo
+            echo "Conflicting files:"
+            echo
+            sed 's/^/- `/; s/$/`/' conflicts.txt
+            echo
+            echo "Resolve locally: \`git fetch upstream --tags && git merge $TAG\`, fix the files, push."
+          } > body.md
+          gh issue create --title "$title" --body-file body.md
