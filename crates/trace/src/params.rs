@@ -103,6 +103,11 @@ pub struct TraceParams {
     /// is one path filled with a linear gradient ([`TracedPath::gradient`]), not bands of colour.
     /// Grayscale finds them in the image's grays, and their stops are gray.
     pub gradients: bool,
+    /// Shapes by Edges (Color): the image is cut into areas where it has an edge, not where its
+    /// colours cross palette entries, so a shaded shape is one path however its colour changes;
+    /// each is filled with the gradient (linear or radial) or flat colour of its own pixels. Noise
+    /// is the smallest area kept (px). Colors, Palette and Gradients are not used.
+    pub edges: bool,
     /// Create: trace areas as filled shapes.
     pub fills: bool,
     /// Create: trace lines no wider than `stroke_width` as stroked centre lines.
@@ -137,6 +142,7 @@ impl Default for TraceParams {
             shapes: false,
             auto_grouping: false,
             gradients: false,
+            edges: false,
             fills: true,
             strokes: false,
             stroke_width: 10.0,
@@ -187,6 +193,7 @@ pub const PRESET_NAMES: &[&str] = &[
     "Technical Drawing",
     "Outline",
     "Flat Logo",
+    "Gradient Logo",
 ];
 
 /// A built-in preset by name (case-insensitive; `[Default]` is accepted).
@@ -232,6 +239,8 @@ pub fn preset(name: &str) -> Option<TraceParams> {
         // Black outlines: lines as stroked centre lines, wider areas as stroked outlines.
         "outline" => TraceParams { fills: false, strokes: true, ..bw(128, 80.0, 70.0, 10, false) },
         // Flat-colour logos: colours found automatically, edges placed to a fraction of a pixel.
+        // Shaded logos: each shape cut at its edges and filled with its own gradient.
+        "gradient logo" => TraceParams { edges: true, gradients: true, ..color(16, 70.0, 60.0, 30, Method::Abutting) },
         "flat logo" => TraceParams { mode: Mode::Logo, colors: 8, paths: 60.0, corners: 50.0, noise: 6, snap_curves_to_lines: true, ..d },
         _ => return None,
     })

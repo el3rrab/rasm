@@ -419,6 +419,7 @@ registry! {
     DivideDashes: [crate::addons::pathtools::dashes::KIND] => crate::addons::pathtools::dashes::SPEC,
     SetCorners: [crate::addons::pathtools::set_corners::KIND] => crate::addons::pathtools::set_corners::SPEC,
     NearestSwatch: [crate::addons::color::nearest::KIND] => crate::addons::color::nearest::SPEC,
+    RasmGradientFromImage: [crate::addons::rasm::KIND] => crate::addons::rasm::SPEC,
     SwatchLegend: [crate::addons::color::legend::KIND] => crate::addons::color::legend::SPEC,
     TextTweaker: [crate::addons::typetools::KIND] => crate::addons::typetools::SPEC,
     SelectByArtboards: [crate::addons::select::KIND] => crate::addons::select::SPEC,

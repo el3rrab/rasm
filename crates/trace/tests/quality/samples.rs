@@ -28,6 +28,7 @@ pub fn settings() -> Vec<(&'static str, TraceParams)> {
         ("16 Colors + Gradients", with_gradients("16 Colors")),
         ("Auto Color + Gradients", with_gradients("Auto Color")),
         ("High Fidelity Photo + Gradients", with_gradients("High Fidelity Photo")),
+        ("Gradient Logo", preset("Gradient Logo").unwrap()),
     ]
 }
 

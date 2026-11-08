@@ -34,9 +34,17 @@ const TOLERANCE: f64 = 12.0;
 const MAX_STEP: f64 = 12.0;
 /// How much further than the tolerance the drawn gradient of a merged area may be from its pixels.
 const DRAWN_SLACK: f64 = 1.5;
-/// How far (levels) the stops' ramps may be from the colours along the gradient, and the most stops.
-const STOP_TOLERANCE: f64 = 3.0;
-const MAX_STOPS: usize = 8;
+/// How a gradient's stops are picked: as few as keep the ramps between them within `tolerance`
+/// (levels of a channel) of the colours along the gradient, at most `most`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stops {
+    pub tolerance: f64,
+    pub most: usize,
+}
+
+impl Stops {
+    pub const DEFAULT: Stops = Stops { tolerance: 3.0, most: 8 };
+}
 /// The least change (levels) across an area for it to be a gradient rather than one flat colour.
 const MIN_CHANGE: f64 = 8.0;
 /// The fewest pixels a merged area has to be a gradient.
@@ -591,10 +599,10 @@ fn paint(img: &Raster, regions: &Regions, px: &[usize], mo: &Moments) -> Option<
     // The drawn gradient of the best model, and how far it is from the pixels.
     let g = (px.len() >= MIN_PIXELS)
         .then(|| match mo.best().1 {
-            Some(Model::Linear { u }) => fit(img, px, Shape::Linear(u)),
+            Some(Model::Linear { u }) => fit(img, px, Shape::Linear(u), &Stops::DEFAULT),
             Some(Model::Radial { centre }) => {
                 let c = refine_centre(img, px, regions.unscaled(centre));
-                fit(img, px, Shape::Radial(c)).or_else(|| fit(img, px, Shape::Linear(mo.direction())))
+                fit(img, px, Shape::Radial(c), &Stops::DEFAULT).or_else(|| fit(img, px, Shape::Linear(mo.direction()), &Stops::DEFAULT))
             }
             None => None,
         })
@@ -678,8 +686,9 @@ enum Shape {
 }
 
 /// The gradient of `shape` that the pixels `px` of `img` are, with as few stops as keep the ramps
-/// within [`STOP_TOLERANCE`] of their colours; `None` when they are one flat colour.
-fn fit(img: &Raster, px: &[usize], shape: Shape) -> Option<TracedGradient> {
+/// within `rule.tolerance` of their colours (at most `rule.most`); `None` when they are one flat
+/// colour.
+fn fit(img: &Raster, px: &[usize], shape: Shape, rule: &Stops) -> Option<TracedGradient> {
     let w = img.width as usize;
     let at = |i: usize| Point::new((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
     let rgb = |i: usize| img.rgba.get(i * 4..i * 4 + 3).map_or([0.0; 3], |p| [f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
@@ -733,7 +742,7 @@ fn fit(img: &Raster, px: &[usize], shape: Shape) -> Option<TracedGradient> {
     if curve.len() < 2 || change(lo_c, hi_c) < MIN_CHANGE {
         return None;
     }
-    let mut tol = STOP_TOLERANCE;
+    let (most, mut tol) = (rule.most.clamp(2, 32), rule.tolerance.clamp(0.5, 64.0));
     let keep = loop {
         let mut keep = vec![0, curve.len() - 1];
         loop {
@@ -748,13 +757,13 @@ fn fit(img: &Raster, px: &[usize], shape: Shape) -> Option<TracedGradient> {
                     }
                 }
             }
-            if worst.1 == 0 || keep.len() > MAX_STOPS {
+            if worst.1 == 0 || keep.len() > most {
                 break;
             }
             keep.push(worst.1);
             keep.sort_unstable();
         }
-        if keep.len() <= MAX_STOPS || tol > 64.0 {
+        if keep.len() <= most || tol > 64.0 {
             break keep;
         }
         tol *= 1.5;
@@ -789,6 +798,150 @@ fn fit(img: &Raster, px: &[usize], shape: Shape) -> Option<TracedGradient> {
             })
         }
     }
+}
+
+/// Which gradient [`paint_pixels`] fits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GradientChoice {
+    /// The one nearer the pixels: linear or radial (or one flat colour).
+    #[default]
+    Auto,
+    Linear,
+    Radial,
+}
+
+/// How [`paint_pixels`] paints an area: one flat colour or a gradient, and how far that is from
+/// the area's pixels (root-mean-square, levels of a channel).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PixelPaint {
+    pub color: [u8; 3],
+    pub gradient: Option<TracedGradient>,
+    pub off: f64,
+}
+
+/// The paint nearest the pixels `px` of `img` (indices into its pixels, row by row): a gradient of
+/// the kind `choice` asks for, its stops picked as `stops` says, or the pixels' mean colour where
+/// they are one flat colour (or no gradient is nearer). `None` without pixels.
+pub fn paint_pixels(img: &Raster, px: &[usize], choice: GradientChoice, stops: &Stops) -> Option<PixelPaint> {
+    let (w, h) = (img.width as usize, img.height as usize);
+    let px: Vec<usize> = px.iter().copied().filter(|&i| i < w * h).collect();
+    if px.is_empty() {
+        return None;
+    }
+    let scale = (w.max(h) as f64 / 2.0).max(1.0);
+    let scaled = |i: usize| (((i % w) as f64 + 0.5 - w as f64 / 2.0) / scale, ((i / w) as f64 + 0.5 - h as f64 / 2.0) / scale);
+    let unscaled = |p: Point| Point::new(p.x * scale + w as f64 / 2.0, p.y * scale + h as f64 / 2.0);
+    let mut mo = Moments::ZERO;
+    for &i in &px {
+        let (x, y) = scaled(i);
+        mo.add(x, y, rgb_of(img, i));
+    }
+    let n = px.len() as f64;
+    let mean = px.iter().fold([0.0; 3], |m, &i| {
+        let c = rgb_of(img, i);
+        [m[0] + c[0], m[1] + c[1], m[2] + c[2]]
+    });
+    let mean = mean.map(|v| v / n);
+    let off = |paint: &dyn Fn(usize) -> [f64; 3]| {
+        let e: f64 = px
+            .iter()
+            .map(|&i| {
+                let (a, b) = (rgb_of(img, i), paint(i));
+                (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f64>()
+            })
+            .sum();
+        (e / (3.0 * n)).sqrt()
+    };
+    let middle = |i: usize| Point::new((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
+    let linear = || fit(img, &px, Shape::Linear(mo.direction()), stops);
+    let radial = || {
+        // Where the colours form no rings, about the area's middle.
+        let start = mo.centre().map_or_else(|| unscaled(mo.mean()), unscaled);
+        fit(img, &px, Shape::Radial(refine_centre(img, &px, start)), stops)
+    };
+    let candidates: Vec<TracedGradient> = match choice {
+        GradientChoice::Auto => [linear(), radial()].into_iter().flatten().collect(),
+        GradientChoice::Linear => linear().into_iter().collect(),
+        GradientChoice::Radial => radial().into_iter().collect(),
+    };
+    let to8 = |c: [f64; 3]| c.map(|v| v.round().clamp(0.0, 255.0) as u8);
+    let flat = PixelPaint { color: to8(mean), gradient: None, off: off(&|_| mean) };
+    let best = candidates
+        .into_iter()
+        .map(|g| {
+            let e = off(&|i| g.color_at(middle(i)));
+            PixelPaint { color: to8(g.color_at(g.start.midpoint(g.end))), gradient: Some(g), off: e }
+        })
+        .min_by(|a, b| a.off.total_cmp(&b.off));
+    // Auto: a gradient only where it is nearer than the flat colour; asked for: the gradient.
+    Some(match best {
+        Some(b) if choice != GradientChoice::Auto || b.off < flat.off => b,
+        _ => flat,
+    })
+}
+
+/// The pixels of a `w` × `h` image whose middles `path` (pixel coordinates) covers, by the
+/// non-zero rule, row by row.
+pub fn pixels_inside(path: &vectorcraft_geom::PathData, w: u32, h: u32) -> Vec<usize> {
+    let (w, h) = (w as usize, h as usize);
+    let mut edges: Vec<(Point, Point, i32)> = vec![];
+    let mut first: Option<Point> = None;
+    let mut last: Option<Point> = None;
+    let close = |first: &mut Option<Point>, last: &mut Option<Point>, edges: &mut Vec<(Point, Point, i32)>| {
+        if let (Some(a), Some(b)) = (*last, *first)
+            && a != b
+        {
+            edges.push((a, b, 0));
+        }
+        *first = None;
+        *last = None;
+    };
+    kurbo::flatten(path.to_bezpath().iter(), 0.1, |el| match el {
+        kurbo::PathEl::MoveTo(p) => {
+            close(&mut first, &mut last, &mut edges);
+            first = Some(p);
+            last = Some(p);
+        }
+        kurbo::PathEl::LineTo(p) => {
+            if let Some(a) = last {
+                edges.push((a, p, 0));
+            }
+            last = Some(p);
+        }
+        kurbo::PathEl::ClosePath => close(&mut first, &mut last, &mut edges),
+        _ => {}
+    });
+    close(&mut first, &mut last, &mut edges);
+    // Each edge upwards with its winding: +1 going down, −1 going up.
+    let edges: Vec<(Point, Point, i32)> = edges
+        .into_iter()
+        .filter(|(a, b, _)| a.y != b.y && a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite())
+        .map(|(a, b, _)| if a.y < b.y { (a, b, 1) } else { (b, a, -1) })
+        .collect();
+    let (lo, hi) = edges.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |m, e| (m.0.min(e.0.y), m.1.max(e.1.y)));
+    if edges.is_empty() || !(lo.is_finite() && hi.is_finite()) {
+        return vec![];
+    }
+    let (r0, r1) = ((lo - 0.5).ceil().clamp(0.0, h as f64) as usize, (hi - 0.5).ceil().clamp(0.0, h as f64) as usize);
+    let mut out = vec![];
+    let mut xs: Vec<(f64, i32)> = vec![];
+    for row in r0..r1 {
+        let y = row as f64 + 0.5;
+        xs.clear();
+        xs.extend(edges.iter().filter(|(a, b, _)| a.y <= y && y < b.y).map(|(a, b, d)| (a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y), *d)));
+        xs.sort_by(|p, q| p.0.total_cmp(&q.0));
+        let mut wind = 0;
+        for pair in xs.windows(2) {
+            wind += pair[0].1;
+            if wind != 0 {
+                // The pixels whose middles lie between the two crossings.
+                let x0 = (pair[0].0 - 0.5).ceil().clamp(0.0, w as f64) as usize;
+                let x1 = (pair[1].0 - 0.5).ceil().clamp(0.0, w as f64) as usize;
+                out.extend((x0..x1).map(|x| row * w + x));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -871,5 +1024,39 @@ mod tests {
             let got = g.color_at(Point::new(x as f64 + 0.5, y as f64 + 0.5));
             assert!((got[0] - f64::from(want[0])).abs() < 5.0, "({x},{y}) {got:?} vs {want:?}");
         }
+    }
+
+    #[test]
+    fn pixels_inside_a_square_and_its_hole() {
+        use vectorcraft_geom::{PathData, Rect, shapes};
+        let outer = shapes::rectangle(Rect::new(2.0, 2.0, 8.0, 8.0));
+        let hole = shapes::rectangle(Rect::new(4.0, 4.0, 6.0, 6.0));
+        let hole: Vec<_> = hole
+            .subpaths
+            .into_iter()
+            .map(|mut sp| {
+                sp.reverse();
+                sp
+            })
+            .collect();
+        let path = PathData::new(outer.subpaths.into_iter().chain(hole).collect());
+        let px = pixels_inside(&path, 10, 10);
+        assert_eq!(px.len(), 36 - 4);
+        assert!(px.contains(&(2 * 10 + 2)) && !px.contains(&(4 * 10 + 4)) && !px.contains(&11));
+    }
+
+    #[test]
+    fn paint_pixels_finds_the_gradient_asked_for() {
+        let img = Raster::from_fn(60, 40, |x, _| [(40 + x * 3) as u8, 100, (200 - x * 2) as u8, 255]);
+        let all: Vec<usize> = (0..60 * 40).collect();
+        let auto = paint_pixels(&img, &all, GradientChoice::Auto, &Stops::DEFAULT).unwrap();
+        let g = auto.gradient.as_ref().expect("a gradient");
+        assert!(!g.radial && auto.off < 2.0, "{auto:?}");
+        let radial = paint_pixels(&img, &all, GradientChoice::Radial, &Stops::DEFAULT).unwrap();
+        assert!(radial.gradient.as_ref().is_some_and(|g| g.radial), "{radial:?}");
+        let flat = Raster::from_fn(10, 10, |_, _| [9, 8, 7, 255]);
+        let p = paint_pixels(&flat, &(0..100).collect::<Vec<_>>(), GradientChoice::Auto, &Stops::DEFAULT).unwrap();
+        assert_eq!((p.color, p.gradient), ([9, 8, 7], None));
+        assert!(paint_pixels(&flat, &[], GradientChoice::Auto, &Stops::DEFAULT).is_none());
     }
 }

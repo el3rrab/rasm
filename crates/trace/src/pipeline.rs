@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use super::layers::{Layers, parallel_map_at_most};
 use super::params::{Method, Mode, TraceParams};
 use super::raster::{Raster, TraceError};
-use super::{AtomicUsize, PathData, Quantized, TRANSPARENT, TracedGradient, TracedShape, gradient, group, logo, merge, quantize, smooth};
+use super::{AtomicUsize, PathData, Quantized, TRANSPARENT, TracedGradient, TracedShape, gradient, group, logo, merge, quantize, segment, smooth};
 
 /// One traced shape: an outer contour plus its holes, filled with `color`, or (with `stroke`)
 /// lines stroked with it.
@@ -109,6 +109,15 @@ fn trace_paths(img: &Raster, params: &TraceParams, max_anchors: usize, steps: &(
         Some(name) if params.ignore_white => Some(logo::parse_hex(name).ok_or_else(|| TraceError::BadPalette(name.clone()))?),
         _ => None,
     };
+    // Shapes by edges: areas cut where the image has an edge, each painted with its own gradient
+    // or colour (see `segment`). An image with more areas than labels is traced as before.
+    if params.edges
+        && params.mode == Mode::Color
+        && let Some((q, gradients)) = segment::segment(img, params.noise as usize)
+    {
+        go_on()?;
+        return trace_layers(img, params, &q, &gradients, ignore, max_anchors, steps);
+    }
     // A photo is traced from a copy with its noise smoothed away (see `smooth`).
     let smoothed = (params.mode != Mode::BlackAndWhite && quantize::continuous_tone(img)).then(|| smooth::smoothed(img));
     let img = smoothed.as_ref().unwrap_or(img);
@@ -165,6 +174,21 @@ fn trace_paths(img: &Raster, params: &TraceParams, max_anchors: usize, steps: &(
         go_on()?;
     }
     drop(grays);
+    trace_layers(img, params, &q, &gradients, ignore, max_anchors, steps)
+}
+
+/// Traces each palette entry of `q` (its gradient, if it has one, in `gradients`) as a layer of
+/// paths: the last stage of [`trace_paths`].
+fn trace_layers(
+    img: &Raster,
+    params: &TraceParams,
+    q: &Quantized,
+    gradients: &[Option<TracedGradient>],
+    ignore: Option<[u8; 3]>,
+    max_anchors: usize,
+    steps: &(dyn Fn(u64, u64) -> bool + Sync),
+) -> Result<TraceResult, TraceError> {
+    let (w, h) = (img.width as usize, img.height as usize);
     // Pixel count per palette entry, and the box its pixels lie in.
     let mut counts = vec![0usize; q.palette.len()];
     let mut boxes: Vec<Option<(usize, usize, usize, usize)>> = vec![None; q.palette.len()];
@@ -199,14 +223,14 @@ fn trace_paths(img: &Raster, params: &TraceParams, max_anchors: usize, steps: &(
     let layers: Vec<(usize, usize)> =
         order.iter().copied().enumerate().filter(|&(_, ci)| !(params.ignore_white && is_ignored(q.palette[ci], ignore))).collect();
     let job = Layers {
-        q: &q,
+        q,
         rank: &rank,
         params,
         img,
         ignore,
         boxes,
-        gradients: &gradients,
-        bw_tones: bw_tones(img, &q),
+        gradients,
+        bw_tones: bw_tones(img, q),
         style: params.outline_style(),
         w,
         h,

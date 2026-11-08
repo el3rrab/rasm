@@ -53,6 +53,7 @@ mod logo;
 mod merge;
 mod mosaic;
 mod quantize;
+mod segment;
 mod shapes;
 mod smooth;
 mod subpixel;
@@ -64,6 +65,7 @@ use vectorcraft_geom::PathData;
 
 pub use contour::{Component, Loop, trace_mask};
 pub use gradient::TracedGradient;
+pub use merge::{GradientChoice, PixelPaint, Stops, paint_pixels, pixels_inside};
 pub use mosaic::mosaic;
 pub use quantize::{FULL_TONE_MAX, Quantized, TRANSPARENT, denoise, quantize};
 pub use shapes::TracedShape;

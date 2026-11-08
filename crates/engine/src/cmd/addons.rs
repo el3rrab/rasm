@@ -8,6 +8,7 @@ mod contour;
 mod document;
 mod pathtools;
 mod pen;
+pub mod rasm;
 mod select;
 mod shapes;
 mod typetools;
@@ -23,6 +24,7 @@ pub fn specs() -> Vec<CommandSpec> {
     v.extend(document::specs());
     v.extend(pathtools::specs());
     v.extend(pen::specs());
+    v.extend(rasm::specs());
     v.extend(select::specs());
     v.extend(shapes::specs());
     v.extend(typetools::specs());
