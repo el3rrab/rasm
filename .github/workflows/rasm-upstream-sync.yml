@@ -30,7 +30,7 @@ jobs:
       UPSTREAM: storytold/vectorcraft
       GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
