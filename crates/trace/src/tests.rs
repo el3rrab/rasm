@@ -522,7 +522,7 @@ fn snap_curves_to_lines_straightens_near_lines() {
 
 #[test]
 fn presets_resolve() {
-    assert_eq!(presets().len(), 16);
+    assert_eq!(presets().len(), 15);
     for n in PRESET_NAMES {
         assert!(preset(n).is_some(), "{n}");
     }

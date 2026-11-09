@@ -50,10 +50,8 @@ mod fit;
 mod gradient;
 mod group;
 mod logo;
-mod merge;
 mod mosaic;
 mod quantize;
-mod segment;
 mod shapes;
 mod smooth;
 mod subpixel;
@@ -65,7 +63,6 @@ use vectorcraft_geom::PathData;
 
 pub use contour::{Component, Loop, trace_mask};
 pub use gradient::TracedGradient;
-pub use merge::{GradientChoice, PixelPaint, Stops, paint_pixels, pixels_inside};
 pub use mosaic::mosaic;
 pub use quantize::{FULL_TONE_MAX, Quantized, TRANSPARENT, denoise, quantize};
 pub use shapes::TracedShape;
@@ -89,3 +86,6 @@ pub use raster::{MAX_PIXELS, MAX_SOURCE_PIXELS, Raster, TraceError};
 
 #[cfg(test)]
 mod tests;
+
+// Rasm: our own tracing, in files of its own.
+pub mod rasm;

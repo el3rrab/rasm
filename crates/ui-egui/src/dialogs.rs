@@ -420,6 +420,7 @@ registry! {
     SetCorners: [crate::addons::pathtools::set_corners::KIND] => crate::addons::pathtools::set_corners::SPEC,
     NearestSwatch: [crate::addons::color::nearest::KIND] => crate::addons::color::nearest::SPEC,
     RasmGradientFromImage: [crate::addons::rasm::KIND] => crate::addons::rasm::SPEC,
+    RasmGradientLogo: [crate::addons::rasm::LOGO_KIND] => crate::addons::rasm::LOGO_SPEC,
     SwatchLegend: [crate::addons::color::legend::KIND] => crate::addons::color::legend::SPEC,
     TextTweaker: [crate::addons::typetools::KIND] => crate::addons::typetools::SPEC,
     SelectByArtboards: [crate::addons::select::KIND] => crate::addons::select::SPEC,

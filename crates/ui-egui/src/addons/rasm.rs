@@ -1,7 +1,10 @@
-//! Rasm, our own add-on, in the interface (Object › Plug-ins › Rasm). Gradient from Image… opens a
-//! dialog that picks the kind of gradient (Auto, Linear, Radial), whether the shapes are merged into
-//! one, the most stops and how smooth the ramps are, with Preview on the canvas; OK runs
-//! `addon.rasm.gradientFromImage` on the shapes selected when the dialog opened.
+//! Rasm, our own add-on, in the interface (Object › Plug-ins › Rasm):
+//!
+//! - Gradient Logo Trace… opens a dialog with Noise, Paths, Corners and Keep Image, with Preview on
+//!   the canvas; OK runs `addon.rasm.gradientLogo` on the image selected when it opened.
+//! - Gradient from Image… opens a dialog that picks the kind of gradient (Auto, Linear, Radial),
+//!   whether the shapes are merged into one, the most stops and how smooth the ramps are, with
+//!   Preview; OK runs `addon.rasm.gradientFromImage` on the shapes selected when it opened.
 
 use egui::Ui;
 use serde_json::{Value, json};
@@ -13,15 +16,17 @@ use crate::state::Dialog;
 use crate::theme::Tokens;
 use crate::widgets;
 
-/// The command OK runs, and the dialog's kind.
+/// The commands OK runs, and their dialogs' kinds.
 pub const COMMAND: &str = "addon.rasm.gradientFromImage";
 pub const KIND: &str = "rasmGradientFromImage";
+pub const LOGO_COMMAND: &str = "addon.rasm.gradientLogo";
+pub const LOGO_KIND: &str = "rasmGradientLogo";
 const LABEL_W: f32 = 110.0;
 const FIELD_W: f32 = 64.0;
 
 /// Object › Plug-ins › Rasm.
 pub fn menu() -> Vec<Item> {
-    vec![Item::Cmd("Gradient from Image…", COMMAND, Value::Null)]
+    vec![Item::Cmd("Gradient Logo Trace…", LOGO_COMMAND, Value::Null), Item::Cmd("Gradient from Image…", COMMAND, Value::Null)]
 }
 
 /// The fields the dialog opens with: the selected objects, Auto, merged, 8 stops, smoothness 3,
@@ -29,6 +34,60 @@ pub fn menu() -> Vec<Item> {
 pub(crate) fn fields(app: &VectorcraftApp) -> Value {
     let ids: Vec<u64> = app.session.active().map_or(vec![], |st| st.selection.objects.iter().map(|i| i.0).collect());
     json!({ "ids": ids, "kind": "auto", "merge": true, "stops": 8, "smoothness": 3.0, "preview": true })
+}
+
+/// Gradient Logo Trace's fields to start with: the selected objects, noise 30, paths 70,
+/// corners 60, the image kept, Preview on.
+pub(crate) fn logo_fields(app: &VectorcraftApp) -> Value {
+    let ids: Vec<u64> = app.session.active().map_or(vec![], |st| st.selection.objects.iter().map(|i| i.0).collect());
+    json!({ "ids": ids, "noise": 30, "paths": 70, "corners": 60, "keepImage": true, "preview": true })
+}
+
+/// Gradient Logo Trace's parameters from the dialog's fields.
+fn logo_params(d: &Dialog) -> Value {
+    json!({
+        "ids": d.fields.get("ids").cloned().unwrap_or(json!([])),
+        "noise": d.f64("noise", 30.0).round().clamp(1.0, 1000.0),
+        "paths": d.f64("paths", 70.0).clamp(0.0, 100.0),
+        "corners": d.f64("corners", 60.0).clamp(0.0, 100.0),
+        "keepImage": d.bool("keepImage"),
+    })
+}
+
+pub(crate) const LOGO_SPEC: DialogSpec = DialogSpec {
+    heading: |_| tl!("Gradient Logo Trace").to_string(),
+    body: logo_body,
+    confirm: |app, d| form::commit_preview(app, LOGO_COMMAND, logo_params(d)),
+    min_width: 360.0,
+    ok_enabled: Some(|_, d| d.fields.get("ids").and_then(Value::as_array).is_some_and(|a| !a.is_empty())),
+    ..DialogSpec::FORM
+};
+
+fn logo_body(app: &mut VectorcraftApp, ui: &mut Ui, d: &mut Dialog) -> bool {
+    let t = Tokens::get(ui.ctx());
+    ui.label(egui::RichText::new(tl!("Cuts the image into its shapes at its edges; each is filled with its own gradient.")).color(t.text_dim));
+    ui.add_space(6.0);
+    for (key, label, range, default, hint) in [
+        ("noise", "Noise:", 1.0..=1000.0, 30.0, "px: the smallest shape kept"),
+        ("paths", "Paths:", 0.0..=100.0, 70.0, "more follows the edges more closely"),
+        ("corners", "Corners:", 0.0..=100.0, 60.0, "more makes more corners"),
+    ] {
+        widgets::label_row(ui, tl!(label), LABEL_W, |ui| {
+            if let Some(v) = widgets::range_field(ui, ("rasm-logo", key), d.f64(key, default), range, "", 0, FIELD_W) {
+                d.fields.insert(key.into(), json!(v));
+            }
+            ui.label(egui::RichText::new(tl!(hint)).color(t.text_dim));
+        });
+    }
+    ui.add_space(4.0);
+    form::check(ui, d, "keepImage", tl!("Keep the Image Hidden Under the Result"));
+    if d.fields.get("ids").and_then(Value::as_array).is_none_or(Vec::is_empty) {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(tl!("Select the image to trace.")).color(t.text_dim));
+        return false;
+    }
+    form::preview(app, ui, d, "Gradient Logo Trace", LOGO_COMMAND, logo_params(d));
+    false
 }
 
 /// The command's parameters from the dialog's fields.
@@ -132,5 +191,30 @@ mod tests {
         let st = app.session.active().unwrap();
         let id = st.selection.objects[0];
         assert!(matches!(st.doc.node(id).unwrap().appearance.fill_paint(), Paint::Gradient(_)), "filled with a gradient");
+    }
+
+    #[test]
+    fn gradient_logo_trace_dialog_traces_the_selected_image() {
+        let mut app = VectorcraftApp::new(Session::new(), Default::default());
+        app.run("file.new", json!({"width": 200, "height": 200})).unwrap();
+        let img = image::RgbaImage::from_fn(100, 50, |x, _| image::Rgba([(20 + x * 2) as u8, 60, (220 - x * 2) as u8, 255]));
+        let path = std::env::temp_dir().join(format!("rasm-logo-{}.png", std::process::id()));
+        img.save(&path).unwrap();
+        app.run("file.place", json!({"path": path.to_string_lossy(), "x": 0, "y": 0})).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let entries = menus::menu_entries(&app);
+        let item = entries.iter().find(|e| e.path == ["Object", "Plug-ins", "Rasm"] && e.label == "Gradient Logo Trace…").unwrap();
+        let (cmd, p) = menus::click_target(&item.label, item.command.as_deref().unwrap(), &item.params);
+        menus::invoke(&mut app, &cmd, p);
+        assert_eq!(app.ui.dialog.as_ref().map(|d| d.kind.as_str()), Some(super::LOGO_KIND));
+        let shown = painted_text(&mut app, |app, ui| crate::dialogs::show(app, ui.ctx()));
+        for s in ["Gradient Logo Trace", "Noise:", "Paths:", "Corners:", "Keep the Image Hidden Under the Result", "Preview"] {
+            assert!(shown.contains(s), "{s} in {shown}");
+        }
+        crate::dialogs::confirm(&mut app).unwrap();
+        assert!(app.ui.dialog.is_none());
+        let st = app.session.active().unwrap();
+        let gid = st.selection.objects[0];
+        assert!(st.doc.node(gid).unwrap().children().is_some_and(|c| !c.is_empty()), "a group of shapes");
     }
 }

@@ -18,8 +18,8 @@ use std::collections::{BinaryHeap, HashMap};
 
 use kurbo::Point;
 
-use crate::quantize::{Quantized, TRANSPARENT};
-use crate::{GradientChoice, Raster, Stops, TracedGradient, paint_pixels};
+use super::fit::{GradientChoice, Moments, ShapeGradient, Stops, paint_pixels};
+use crate::{Quantized, Raster, TRANSPARENT};
 
 /// Edge strength (levels a pixel) below which a pixel can seed an area, and the fewest pixels a
 /// seed has.
@@ -263,7 +263,6 @@ const SOFT_MERGE_SLACK: f64 = 1.2;
 /// Merges neighbouring areas of `of` across soft borders (see [`SOFT_BORDER`]), cheapest first;
 /// the areas numbered afresh from 0.
 fn merge_soft(img: &Raster, of: &mut [u32], g: &[f32], count: usize) -> usize {
-    use crate::merge::Moments;
     let (w, h) = (img.width as usize, img.height as usize);
     let scale = (w.max(h) as f64 / 2.0).max(1.0);
     let mut moments = vec![Moments::ZERO; count];
@@ -389,7 +388,7 @@ const DETAIL_PIXELS: usize = 12;
 /// from the area's inside, two pixels in from its edge, where it has one of a fair size: its rim's
 /// pixels are part the colour beside it (anti-aliasing, blur) and would pull the gradient's ends
 /// towards that colour.
-fn paints(img: &Raster, of: &[u32], count: usize) -> Vec<([u8; 3], Option<TracedGradient>)> {
+fn paints(img: &Raster, of: &[u32], count: usize) -> Vec<([u8; 3], Option<ShapeGradient>)> {
     let (w, h) = (img.width as usize, img.height as usize);
     // Each pixel's depth inside its area: 0 on the rim (a neighbour of another area, or the image's
     // edge), then 1, then 2 and more.
@@ -434,7 +433,7 @@ fn paints(img: &Raster, of: &[u32], count: usize) -> Vec<([u8; 3], Option<Traced
 
 /// Splits off each detail the areas swallowed (see [`DETAIL_OFF`]) as an area of its own; the
 /// areas it changed, to paint again.
-fn split_details(img: &Raster, of: &mut [u32], count: &mut usize, painted: &[([u8; 3], Option<TracedGradient>)]) -> Vec<u32> {
+fn split_details(img: &Raster, of: &mut [u32], count: &mut usize, painted: &[([u8; 3], Option<ShapeGradient>)]) -> Vec<u32> {
     let (w, h) = (img.width as usize, img.height as usize);
     let off = |i: usize| -> bool {
         let Some(&a) = of.get(i) else { return false };
@@ -511,7 +510,7 @@ fn stands_out(img: &Raster, of: &[u32], members: &[usize], bad: &[bool], area: u
 /// The image cut into areas by its edges, each a palette entry painted with its own gradient or
 /// flat colour; `noise` (px) is the smallest area kept. `None` when there are more areas than
 /// labels (the image is a photo, not shapes).
-pub(crate) fn segment(img: &Raster, noise: usize) -> Option<(Quantized, Vec<Option<TracedGradient>>)> {
+pub(crate) fn segment(img: &Raster, noise: usize) -> Option<(Quantized, Vec<Option<ShapeGradient>>)> {
     let (w, h) = (img.width as usize, img.height as usize);
     if w == 0 || h == 0 || img.rgba.len() != w * h * 4 {
         return None;
@@ -537,7 +536,7 @@ pub(crate) fn segment(img: &Raster, noise: usize) -> Option<(Quantized, Vec<Opti
             }
         }
     }
-    let (palette, gradients): (Vec<[u8; 3]>, Vec<Option<TracedGradient>>) = painted.into_iter().unzip();
+    let (palette, gradients): (Vec<[u8; 3]>, Vec<Option<ShapeGradient>>) = painted.into_iter().unzip();
     let labels = of.iter().map(|&a| if a == u32::MAX { TRANSPARENT } else { u16::try_from(a).unwrap_or(TRANSPARENT) }).collect();
     Some((Quantized { labels, palette }, gradients))
 }

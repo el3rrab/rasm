@@ -1,34 +1,55 @@
-//! Rasm (`addon.rasm.*`), our own add-on. Gradient from Image fills the selected shapes with the
-//! gradient (linear or radial) or flat colour that the image under them has there: the colours are
-//! read from the image's own pixels inside the shapes, as Image Trace's Gradients option reads
-//! them ([`vectorcraft_trace::paint_pixels`]). With Merge, the shapes become one shape first (as
-//! Pathfinder › Unite makes them) with one gradient over all of it; without, each selected object
-//! gets its own. It is how traced pieces of one shaded area are put back together.
+//! Rasm (`addon.rasm.*`), our own add-on:
+//!
+//! - Gradient Logo Trace traces the selected image into its shapes, cut at the image's edges, each
+//!   filled with the linear or radial gradient (or flat colour) of its own pixels
+//!   ([`vectorcraft_trace::rasm::trace_gradient_logo`]); the image stays, hidden, under the result.
+//! - Gradient from Image fills the selected shapes with the gradient or flat colour that the image
+//!   under them has there ([`vectorcraft_trace::rasm::paint_pixels`]). With Merge, the shapes
+//!   become one shape first (as Pathfinder › Unite makes them) with one gradient over all of it;
+//!   without, each selected object gets its own. It is how traced pieces of one shaded area are
+//!   put back together.
 
 use serde_json::{Value, json};
 use vectorcraft_color::{Color, Gradient, GradientGeom, GradientKind, GradientPaint, GradientStop, Paint};
-use vectorcraft_doc::{Document, ImageObject, Node, NodeId, NodeKind};
+use vectorcraft_doc::appearance::{AppearanceItem, FillLayer};
+use vectorcraft_doc::{Appearance, Document, ImageObject, Node, NodeId, NodeKind};
 use vectorcraft_geom::{Affine, FillRule, PathData, Point, Rect};
 use vectorcraft_pathops as po;
 use vectorcraft_trace as tr;
+use vectorcraft_trace::rasm as traced;
 
 use super::super::pathops::{node_path, pf_leaves, shape_node, style_of};
 use super::super::{CommandSpec, bad, bool_or, checked_ids_or_selection, cmd, has_selection, number_or, str_param};
 use crate::{EngineError, Result, Session};
 
-/// The command.
+/// The commands.
 pub const GRADIENT_FROM_IMAGE: &str = "addon.rasm.gradientFromImage";
+pub const GRADIENT_LOGO: &str = "addon.rasm.gradientLogo";
+
+/// The most anchor points a Gradient Logo trace makes (as Image Trace's own limit).
+const MAX_ANCHORS: usize = 8_000_000;
 
 pub fn specs() -> Vec<CommandSpec> {
-    vec![cmd!(
-        "addon.rasm.gradientFromImage",
-        "Gradient from Image",
-        ["Object", "Plug-ins", "Rasm"],
-        None,
-        "{ids?: [id…] (default: the selection; images among them are left out), image?: id (the image to read the colours from: an image, or an Image Trace object's image; default: the image under the shapes that most overlaps them), kind?: \"auto\"|\"linear\"|\"radial\" (auto: whichever is nearer the image, or a flat colour where the area is one), merge?: true (unite the shapes into one, as Pathfinder › Unite, painted with one gradient; false: each selected object its own), stops?: 2..16 (8, the most stops), smoothness?: 0.5..32 (3: how far, in levels of a channel, the ramps between stops may be from the image's colours; more is fewer stops)} fill the shapes with the gradient the image has under them → {ids, image, results: [{id, kind: \"linear\"|\"radial\"|\"flat\", stops, off: root-mean-square difference from the image's pixels, levels}]}",
-        has_selection,
-        gradient_from_image
-    )]
+    vec![
+        cmd!(
+            "addon.rasm.gradientLogo",
+            "Gradient Logo Trace",
+            ["Object", "Plug-ins", "Rasm"],
+            None,
+            "{id?: image or Image Trace object (default: the selected one), noise?: px 1..1000 (30: the smallest shape kept), paths?: 0..100 (70: how closely the curves follow the edges), corners?: 0..100 (60: more makes more corners), keepImage?: true (keep the image, hidden, under the result, for Gradient from Image; false: remove it)} trace the image into its shapes, cut at its edges, each filled with the linear or radial gradient (or flat colour) of its own pixels, as one undo step → {id: the group of shapes, shapes, gradients, image}",
+            has_selection,
+            gradient_logo
+        ),
+        cmd!(
+            "addon.rasm.gradientFromImage",
+            "Gradient from Image",
+            ["Object", "Plug-ins", "Rasm"],
+            None,
+            "{ids?: [id…] (default: the selection; images among them are left out), image?: id (the image to read the colours from: an image, or an Image Trace object's image; default: the image under the shapes that most overlaps them), kind?: \"auto\"|\"linear\"|\"radial\" (auto: whichever is nearer the image, or a flat colour where the area is one), merge?: true (unite the shapes into one, as Pathfinder › Unite, painted with one gradient; false: each selected object its own), stops?: 2..16 (8, the most stops), smoothness?: 0.5..32 (3: how far, in levels of a channel, the ramps between stops may be from the image's colours; more is fewer stops)} fill the shapes with the gradient the image has under them → {ids, image, results: [{id, kind: \"linear\"|\"radial\"|\"flat\", stops, off: root-mean-square difference from the image's pixels, levels}]}",
+            has_selection,
+            gradient_from_image
+        ),
+    ]
 }
 
 /// The bounds in the document of image `i`.
@@ -72,9 +93,9 @@ fn find_image(d: &Document, asked: Option<NodeId>, over: Rect) -> Result<(NodeId
         .ok_or_else(|| bad(C, "no image lies under the shapes: place the image the colours come from under them (or name it with `image`)"))
 }
 
-/// A traced gradient (in the raster's pixels) as a fill, placed in the document by `xf`.
-fn fill_of(p: &tr::PixelPaint, xf: Affine) -> Paint {
-    let Some(g) = &p.gradient else { return Paint::solid(Color::rgb8(p.color[0], p.color[1], p.color[2])) };
+/// A traced colour or gradient (in the raster's pixels) as a fill, placed in the document by `xf`.
+fn fill_of(color: [u8; 3], gradient: Option<&traced::ShapeGradient>, xf: Affine) -> Paint {
+    let Some(g) = gradient else { return Paint::solid(Color::rgb8(color[0], color[1], color[2])) };
     let stops = g.stops.iter().map(|&(at, c)| GradientStop::new(at as f32, Color::rgb8(c[0], c[1], c[2]))).collect();
     let kind = if g.radial { GradientKind::Radial } else { GradientKind::Linear };
     let mut paint = GradientPaint::new(Gradient::new(kind, stops));
@@ -89,12 +110,74 @@ fn shapes_of(d: &Document, n: &Node) -> Vec<(PathData, FillRule)> {
     leaves.iter().filter_map(node_path).filter(|(p, _)| !p.is_empty()).collect()
 }
 
+/// The pixels of image `image`, and the map from them to the document.
+fn image_raster(d: &Document, image: &ImageObject, c: &str) -> Result<(tr::Raster, Affine)> {
+    let bytes = d.images.get(&image.key).ok_or_else(|| EngineError::Other(format!("image data `{}` is missing", image.key)))?.bytes.clone();
+    let raster = tr::Raster::decode_to_fit(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
+    // The raster's pixels → the image's pixels → the document.
+    let xf = image.xf
+        * Affine::scale_non_uniform(image.width.max(1) as f64 / raster.width.max(1) as f64, image.height.max(1) as f64 / raster.height.max(1) as f64);
+    if xf.determinant().abs() < 1e-12 || !xf.determinant().is_finite() {
+        return Err(bad(c, "the image has no area"));
+    }
+    Ok((raster, xf))
+}
+
+fn gradient_logo(s: &mut Session, p: &Value) -> Result<Value> {
+    const C: &str = GRADIENT_LOGO;
+    let noise = number_or(p, "noise", 30.0, C)?;
+    let paths = number_or(p, "paths", 70.0, C)?;
+    let corners = number_or(p, "corners", 60.0, C)?;
+    if !(1.0..=1000.0).contains(&noise) || !(0.0..=100.0).contains(&paths) || !(0.0..=100.0).contains(&corners) {
+        return Err(bad(C, "noise: 1..1000, paths: 0..100, corners: 0..100"));
+    }
+    let keep = bool_or(p, "keepImage", true);
+    let settings = traced::GradientLogo { noise: noise.round() as u32, paths, corners };
+    let target = match p.get("id") {
+        Some(v) => vec![NodeId(v.as_u64().ok_or_else(|| bad(C, "id: an object id"))?)],
+        None => checked_ids_or_selection(s, p, C)?,
+    };
+    let d = &s.doc()?.doc;
+    let (target, image) = target
+        .iter()
+        .find_map(|&id| image_of(d.node(id)?).map(|i| (id, i.clone())))
+        .ok_or_else(|| bad(C, "select an image (or an Image Trace object)"))?;
+    let (raster, xf) = image_raster(d, &image, C)?;
+    let shapes = traced::trace_gradient_logo(&raster, &settings, MAX_ANCHORS).map_err(|e| EngineError::Other(e.to_string()))?;
+    let gradients = shapes.iter().filter(|s| s.gradient.is_some()).count();
+    let count = shapes.len();
+    let gid = s.edit("Gradient Logo Trace", |d, sel| {
+        let mut children = Vec::with_capacity(shapes.len());
+        for shape in &shapes {
+            let mut n = shape_node(d, shape.path.path.transformed(xf), None);
+            let fill = fill_of(shape.path.color, shape.gradient.as_ref(), xf);
+            n.appearance = Appearance { items: vec![AppearanceItem::Fill(FillLayer::new(fill))], ..Default::default() }.into();
+            children.push(std::sync::Arc::new(n));
+        }
+        let gid = d.alloc_id();
+        let mut group = Node::group(gid, children);
+        group.name = Some("Gradient Logo".into());
+        let (par, idx, _) = d.position(target).ok_or(EngineError::NoNode(target))?;
+        d.insert(par, idx + 1, group)?;
+        if keep {
+            if let Some(n) = d.node_mut(target) {
+                n.visible = false;
+            }
+        } else {
+            d.remove(target)?;
+        }
+        sel.set([gid]);
+        Ok(gid)
+    })?;
+    Ok(json!({"id": gid.0, "shapes": count, "gradients": gradients, "image": target.0}))
+}
+
 fn gradient_from_image(s: &mut Session, p: &Value) -> Result<Value> {
     const C: &str = GRADIENT_FROM_IMAGE;
     let choice = match str_param(p, "kind").unwrap_or("auto") {
-        "auto" => tr::GradientChoice::Auto,
-        "linear" => tr::GradientChoice::Linear,
-        "radial" => tr::GradientChoice::Radial,
+        "auto" => traced::GradientChoice::Auto,
+        "linear" => traced::GradientChoice::Linear,
+        "radial" => traced::GradientChoice::Radial,
         other => return Err(bad(C, format!("kind: {other:?} is not one of auto, linear, radial"))),
     };
     let merge = bool_or(p, "merge", true);
@@ -103,7 +186,7 @@ fn gradient_from_image(s: &mut Session, p: &Value) -> Result<Value> {
     if !(2.0..=16.0).contains(&most) || !(0.5..=32.0).contains(&smoothness) {
         return Err(bad(C, "stops: 2..16, smoothness: 0.5..32"));
     }
-    let rule = tr::Stops { tolerance: smoothness, most: most.round() as usize };
+    let rule = traced::Stops { tolerance: smoothness, most: most.round() as usize };
     let asked = match p.get("image") {
         Some(v) => Some(NodeId(v.as_u64().ok_or_else(|| bad(C, "image: an object id"))?)),
         None => None,
@@ -125,23 +208,16 @@ fn gradient_from_image(s: &mut Session, p: &Value) -> Result<Value> {
     let all: Vec<&(PathData, FillRule)> = objects.iter().flat_map(|o| &o.1).collect();
     let over = all.iter().filter_map(|(p, _)| p.bounds()).reduce(|a, b| a.union(b)).ok_or_else(|| bad(C, "select shapes to fill"))?;
     let (image_id, image) = find_image(d, asked, over)?;
-    let bytes = d.images.get(&image.key).ok_or_else(|| EngineError::Other(format!("image data `{}` is missing", image.key)))?.bytes.clone();
-    let raster = tr::Raster::decode_to_fit(&bytes).map_err(|e| EngineError::Other(e.to_string()))?;
-    // The raster's pixels → the image's pixels → the document.
-    let xf = image.xf
-        * Affine::scale_non_uniform(image.width.max(1) as f64 / raster.width.max(1) as f64, image.height.max(1) as f64 / raster.height.max(1) as f64);
-    if xf.determinant().abs() < 1e-12 || !xf.determinant().is_finite() {
-        return Err(bad(C, "the image has no area"));
-    }
+    let (raster, xf) = image_raster(d, &image, C)?;
     let to_pixels = xf.inverse();
-    let paint_of = |shapes: &[&(PathData, FillRule)]| -> Result<tr::PixelPaint> {
+    let paint_of = |shapes: &[&(PathData, FillRule)]| -> Result<traced::PixelPaint> {
         let mut px: Vec<usize> =
-            shapes.iter().flat_map(|(path, _)| tr::pixels_inside(&path.transformed(to_pixels), raster.width, raster.height)).collect();
+            shapes.iter().flat_map(|(path, _)| traced::pixels_inside(&path.transformed(to_pixels), raster.width, raster.height)).collect();
         px.sort_unstable();
         px.dedup();
-        tr::paint_pixels(&raster, &px, choice, &rule).ok_or_else(|| bad(C, "the shapes cover none of the image's pixels"))
+        traced::paint_pixels(&raster, &px, choice, &rule).ok_or_else(|| bad(C, "the shapes cover none of the image's pixels"))
     };
-    let report = |id: NodeId, p: &tr::PixelPaint| {
+    let report = |id: NodeId, p: &traced::PixelPaint| {
         let kind = match &p.gradient {
             Some(g) if g.radial => "radial",
             Some(_) => "linear",
@@ -163,7 +239,7 @@ fn gradient_from_image(s: &mut Session, p: &Value) -> Result<Value> {
             leaves.last().map(style_of)
         });
         let ids: Vec<NodeId> = objects.iter().map(|o| o.0).collect();
-        let fill = fill_of(&painted, xf);
+        let fill = fill_of(painted.color, painted.gradient.as_ref(), xf);
         let id = s.edit("Gradient from Image", |d, sel| {
             let mut n = shape_node(d, united, None);
             if let Some(st) = &style {
@@ -177,7 +253,7 @@ fn gradient_from_image(s: &mut Session, p: &Value) -> Result<Value> {
         return Ok(json!({"ids": [id.0], "image": image_id.0, "results": [report(id, &painted)]}));
     }
     // Each object its own: paths and compound paths take the fill; a group's shapes each take it.
-    let mut fills: Vec<(NodeId, tr::PixelPaint)> = vec![];
+    let mut fills: Vec<(NodeId, traced::PixelPaint)> = vec![];
     for (id, shapes) in &objects {
         let refs: Vec<&(PathData, FillRule)> = shapes.iter().collect();
         fills.push((*id, paint_of(&refs)?));
@@ -186,7 +262,7 @@ fn gradient_from_image(s: &mut Session, p: &Value) -> Result<Value> {
     let ids: Vec<NodeId> = fills.iter().map(|f| f.0).collect();
     s.edit("Gradient from Image", |d, sel| {
         for (id, painted) in &fills {
-            let fill = fill_of(painted, xf);
+            let fill = fill_of(painted.color, painted.gradient.as_ref(), xf);
             let Some(n) = d.node_mut(*id) else { continue };
             set_fill_deep(n, &fill);
         }
@@ -275,5 +351,21 @@ mod tests {
         // Nothing under a shape far away.
         let c = s.execute("shape.rectangle", &json!({"x": 150, "y": 150, "width": 20, "height": 20})).unwrap()["id"].as_u64().unwrap();
         assert!(s.execute(super::GRADIENT_FROM_IMAGE, &json!({"ids": [c]})).is_err());
+    }
+
+    #[test]
+    fn gradient_logo_traces_the_image_and_keeps_it_hidden_below() {
+        let (mut s, image, a, b) = setup();
+        s.execute("select.none", &json!({})).unwrap();
+        let _ = (a, b);
+        let r = s.execute(super::GRADIENT_LOGO, &json!({"id": image})).unwrap();
+        assert!(r["shapes"].as_u64().unwrap() >= 1, "{r}");
+        assert!(r["gradients"].as_u64().unwrap() >= 1, "{r}");
+        let st = s.active().unwrap();
+        assert!(!st.doc.node(vectorcraft_doc::NodeId(image)).unwrap().visible, "the image is hidden under the result");
+        let gid = vectorcraft_doc::NodeId(r["id"].as_u64().unwrap());
+        assert_eq!(st.selection.objects, vec![gid]);
+        assert!(s.execute(super::GRADIENT_LOGO, &json!({"id": image, "noise": 0})).is_err());
+        assert!(s.execute(super::GRADIENT_LOGO, &json!({"id": a})).is_err(), "not an image");
     }
 }

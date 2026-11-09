@@ -3570,7 +3570,7 @@ fn image_trace_presets_query_and_errors() {
     let mut s = session();
     let r = s.execute("imageTrace.presets", &json!({})).unwrap();
     let names: Vec<&str> = r["presets"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
-    assert_eq!(names.len(), 16);
+    assert_eq!(names.len(), 15);
     assert!(names.contains(&"Auto Color") && names.contains(&"Outline"));
     assert!(names.contains(&"Technical Drawing") && names.contains(&"Shades of Gray") && names.contains(&"Flat Logo"));
     let a = rect(&mut s, 0.0, 0.0, 10.0, 10.0);
@@ -3589,7 +3589,7 @@ fn image_trace_saved_presets_are_made_used_renamed_and_deleted() {
     assert_eq!((r["name"].as_str(), r["created"].as_bool(), r["params"]["ignoreWhite"].as_bool()), (Some("Disc Only"), Some(true), Some(true)));
     let list = s.execute("imageTrace.presets", &json!({})).unwrap();
     let list = list["presets"].as_array().unwrap();
-    assert_eq!(list.len(), 17);
+    assert_eq!(list.len(), 16);
     assert!(list[..15].iter().all(|p| p["builtIn"] == true));
     assert_eq!((list[15]["name"].as_str(), list[15]["builtIn"].as_bool()), (Some("Disc Only"), Some(false)));
     assert!(list[15]["enhanced"].is_null());
